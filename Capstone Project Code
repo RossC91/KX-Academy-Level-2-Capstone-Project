@@ -1,0 +1,131 @@
+###################################1. Data Loading##################
+
+// Load into the current process the database that was created
+\l /home/jovyan/fundamentals_capstone_dbs 
+
+showTableSummary:{tables[]!(count each value each tables[])} // returns a dictionary of the tables within the process associated to the number of records for each
+showTableSummary[]
+uniqueOpts:distinct trade[`option_id] // a symbol list of the unique options present in the trade table
+
+refServiceHandle: hopen 5457 // connecting to a q process which is accessible on port 5457
+
+optRef:refServiceHandle (`getOptionRef;uniqueOpts); //retrieving the associated Options Reference data
+
+//(refServiceHandle) "getOptionRef"
+//optRef:select from option where option_id in uniqueOpts
+distincteOpts:distinct optRef[`inst_id]   // the unique instruments in our new optRef table
+
+
+instRef:select from inst where inst_id in distincteOpts //  extract the unique instruments in our new optRef table, and call the getInstRef API to return the Instrument Reference data 
+csvPath:getenv[`AX_WORKSPACE],"/FP.Data/message.csv" //load in data that is stored in a CSV file
+messages:("SS"; enlist ",") 0: `:/opt/kx/developer/workspace/__nouser__/funds_capstone/FP.Data/message.csv //the message.csv file loaded and stored in a table called messages
+
+
+testSection[`exercise1] // testing the first exercise
+
+###########2. Data Cleaning ##############################
+
+
+
+optRef: update "D"$expiry from optRef // updating the expiry column to the date type in optRef table
+
+extractBrokerId:{$[(x:"-" vs x)[0] ~ "CME"; // this function will return the brokerId as a long when passed an exchange message
+        "J"$x[2];
+        "J"$x[1]]
+    }
+l:"ISE-708-TSLA20200920C1700" "CME-TSLA20200920C1700-709"
+count l
+extractBrokerId["ISE-708-TSLA20200920C1700"] // testing the extractBrokerId function
+
+
+BrokerIds: extractBrokerId each string (select exch_message from messages)`exch_message // creating the list of broker ids
+
+messages: update broker_id:BrokerIds from messages // adding the broker id`s to the messages table
+
+messages: update string trade_id,string exch_message from messages // changing the column types to string
+
+meta optRef
+
+testSection[`exercise2]
+
+##############3. Data Analytics and Reporting ######################
+
+
+trade: 0!select from trade
+
+tradeContext: aj[`option_id`time;trade;select option_id,time,bid,ask from nbbo]
+tradeContext:`option_id xcols tradeContext
+tradeContext:`date xcols update date:2020.08.06 from tradeContext
+
+classifyTrades:{
+  update exQuality: 
+  ?[side = `B; 
+        price <= ask; 
+        ?[side = `S; 
+            price >= bid; 0b]] 
+  from x
+    }  
+
+classifyTrades[tradeContext]
+
+
+
+badTrades:select from classifyTrades[tradeContext] where exQuality = 0b
+getenv`AX_WORKSPACE
+save `:/opt/kx/developer/workspace/__nouser__/funds_capstone/badTrades.csv
+`badTrades.csv in key hsym `$getenv`AX_WORKSPACE
+read0 `$getenv[`AX_WORKSPACE],"/badTrades.csv"
+meta tradeContext
+testSection[`exercise3]
+
+
+#####################4. Profitability Analysis########################
+
+
+edge15:select edge:sum edge,qty:sum qty,numTrds:count trade_id by 15 xbar time.minute from tradeContext
+
+
+returnN:{[orderColumn;order;N;t] 
+        RT:$[order = `top;
+            N# orderColumn xdesc t;
+            order = `bottom;
+            N# orderColumn xasc t;
+            0b]; 
+       ?[asc RT;();0b;enlist[orderColumn]!enlist orderColumn]
+    
+    }
+
+top5EdgeTimes:returnN[`edge;`top;5;edge15]
+bottom5QtyTimes:returnN[`qty;`bottom;5;edge15]
+
+
+timeSeries: flip select edge, qty, numTrds from edge15
+
+
+edgeCor: (`edge`qty`numTrds)!(
+  cor[timeSeries`edge; timeSeries`edge];
+  cor[timeSeries`edge; timeSeries`qty];
+  cor[timeSeries`edge; timeSeries`numTrds]
+ )
+
+
+testSection[`exercise4]
+
+
+###################5. Profiling and Outlier Analysis############################
+
+optProfile: select numTrds:count trade_id,avgEdge:avg edge,minQty:min qty,maxQty:max qty 
+                by option_id 
+                from tradeContext
+
+edgeProfile:select numTrds:count trade_id,avgEdge:avg edge,minQty:min qty,maxQty:max qty 
+                by option_id                
+                from tradeContext
+                where edge > (avg;edge)
+                fby option_id
+
+NT:optRef lj (`inst_id  xkey instRef)
+edgeProfileFull: edgeProfile lj (`option_id xkey NT);
+testSection[`exercise5]
+
+submitProject[]
